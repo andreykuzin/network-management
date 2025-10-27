@@ -468,10 +468,20 @@
 
                     result.records.forEach((record, index) => {
                         const rank = index + 1;
-                        const hops = record.get('hops').toNumber();
-                        const bottleneck = record.get('bottleneck_mbps').toNumber();
-                        const distance = record.get('distance_km');
-                        const latency = record.get('latency_ms');
+
+                        // Handle different Neo4j data types (Integer vs native number)
+                        const hopsRaw = record.get('hops');
+                        const hops = typeof hopsRaw === 'object' && hopsRaw.toNumber ? hopsRaw.toNumber() : Number(hopsRaw);
+
+                        const bottleneckRaw = record.get('bottleneck_mbps');
+                        const bottleneck = typeof bottleneckRaw === 'object' && bottleneckRaw.toNumber ? bottleneckRaw.toNumber() : Number(bottleneckRaw);
+
+                        const distanceRaw = record.get('distance_km');
+                        const distance = typeof distanceRaw === 'object' && distanceRaw.toNumber ? distanceRaw.toNumber() : Number(distanceRaw);
+
+                        const latencyRaw = record.get('latency_ms');
+                        const latency = typeof latencyRaw === 'object' && latencyRaw.toNumber ? latencyRaw.toNumber() : Number(latencyRaw);
+
                         const route = record.get('route');
 
                         const pathType = rank === 1 ? 'main' : 'protection';
