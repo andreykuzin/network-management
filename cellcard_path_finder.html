@@ -417,9 +417,10 @@
                 );
 
                 // Optimized query: use shortestPath algorithm, more memory efficient
+                // Note: Neo4j doesn't support parameters in path length, must use literal number
                 const query = `
                     // Find shortest paths first (most efficient)
-                    MATCH path = allShortestPaths((start:Site {id: $startSite})-[:CONNECTED_BY*1..$maxHops]-(end:Site {id: $endSite}))
+                    MATCH path = allShortestPaths((start:Site {id: $startSite})-[:CONNECTED_BY*1..${maxHops}]-(end:Site {id: $endSite}))
 
                     WITH path,
                          [node IN nodes(path) | node.id] as route,
@@ -449,7 +450,7 @@
                            route
                 `;
 
-                const queryPromise = session.run(query, { startSite, endSite, maxHops });
+                const queryPromise = session.run(query, { startSite, endSite });
 
                 // Race between query and timeout
                 const result = await Promise.race([queryPromise, timeoutPromise]);
