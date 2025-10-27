@@ -37,6 +37,9 @@
             border-radius: 5px;
             box-sizing: border-box;
         }
+        select {
+            cursor: pointer;
+        }
         button {
             background: #0066cc;
             color: white;
@@ -50,6 +53,10 @@
         }
         button:hover {
             background: #0052a3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
         }
         #results {
             margin-top: 30px;
@@ -88,6 +95,7 @@
             background: white;
             border-radius: 5px;
             font-family: monospace;
+            font-size: 14px;
         }
         .error {
             background: #ffebee;
@@ -112,13 +120,82 @@
             font-weight: bold;
             color: #856404;
         }
+        .status-bar {
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .status-connected {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .status-disconnected {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        .dot-green {
+            background: #28a745;
+            box-shadow: 0 0 5px #28a745;
+        }
+        .dot-red {
+            background: #dc3545;
+        }
+        .btn-small {
+            padding: 5px 10px;
+            font-size: 14px;
+            width: auto;
+            margin: 0;
+        }
+        .toggle-config {
+            background: #6c757d;
+            color: white;
+            padding: 8px 15px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        .toggle-config:hover {
+            background: #5a6268;
+        }
+        .config.collapsed {
+            display: none;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🗺️ Cellcard Transport Path Finder</h1>
 
-        <div class="config">
+        <!-- Connection Status -->
+        <div id="statusBar" class="status-bar status-disconnected">
+            <div>
+                <span class="status-dot dot-red" id="statusDot"></span>
+                <strong>Status:</strong> <span id="statusText">Disconnected</span>
+            </div>
+            <div>
+                <span id="siteCount">0 sites loaded</span>
+            </div>
+        </div>
+
+        <!-- Toggle Config Button -->
+        <button class="toggle-config" onclick="toggleConfig()">⚙️ Toggle Connection Settings</button>
+
+        <!-- Config Section (Collapsible) -->
+        <div class="config collapsed" id="configSection">
             <div class="config-label">⚙️ Neo4j Connection Settings:</div>
             <div class="form-group">
                 <label>Neo4j URL:</label>
@@ -132,22 +209,26 @@
                 <label>Password:</label>
                 <input type="password" id="neo4jPassword" value="cellcard123" />
             </div>
+            <button onclick="testConnection()" class="btn-small">🔌 Test Connection</button>
         </div>
 
+        <!-- Site Selection -->
         <div class="form-group">
             <label>From Site (Core):</label>
-            <input type="text" id="startSite" placeholder="e.g., MOBITEL" value="MOBITEL" list="sites-list" />
+            <select id="startSite">
+                <option value="">-- Select From Site --</option>
+            </select>
         </div>
 
         <div class="form-group">
             <label>To Site (Edge):</label>
-            <input type="text" id="endSite" placeholder="e.g., SI270" list="sites-list" />
+            <select id="endSite">
+                <option value="">-- Select To Site --</option>
+            </select>
         </div>
 
-        <datalist id="sites-list"></datalist>
-
-        <button onclick="findPaths()">🔍 Find Main + Protection Paths</button>
-        <button onclick="loadSiteList()" style="background: #666; margin-top: 5px;">📋 Load Available Sites</button>
+        <button onclick="findPaths()" id="findPathBtn" disabled>🔍 Find Main + Protection Paths</button>
+        <button onclick="loadSiteList()" style="background: #28a745; margin-top: 5px;">📋 Load Sites from Database</button>
 
         <div id="results"></div>
     </div>
@@ -156,6 +237,37 @@
     <script>
         let driver = null;
         let session = null;
+        let isConnected = false;
+
+        function toggleConfig() {
+            const config = document.getElementById('configSection');
+            config.classList.toggle('collapsed');
+        }
+
+        function updateStatus(connected, message, siteCount = null) {
+            isConnected = connected;
+            const statusBar = document.getElementById('statusBar');
+            const statusDot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            const siteCountEl = document.getElementById('siteCount');
+            const findPathBtn = document.getElementById('findPathBtn');
+
+            if (connected) {
+                statusBar.className = 'status-bar status-connected';
+                statusDot.className = 'status-dot dot-green';
+                statusText.textContent = message || 'Connected';
+                findPathBtn.disabled = false;
+            } else {
+                statusBar.className = 'status-bar status-disconnected';
+                statusDot.className = 'status-dot dot-red';
+                statusText.textContent = message || 'Disconnected';
+                findPathBtn.disabled = true;
+            }
+
+            if (siteCount !== null) {
+                siteCountEl.textContent = `${siteCount} sites loaded`;
+            }
+        }
 
         function getDriver() {
             const url = document.getElementById('neo4jUrl').value;
@@ -170,38 +282,23 @@
             return driver;
         }
 
-        async function loadSiteList() {
+        async function testConnection() {
             const resultsDiv = document.getElementById('results');
-            resultsDiv.innerHTML = '<div class="loading">Loading sites...</div>';
+            resultsDiv.innerHTML = '<div class="loading">Testing connection...</div>';
 
             try {
                 const driver = getDriver();
                 const session = driver.session();
 
-                const result = await session.run(`
-                    MATCH (s:Site)
-                    RETURN s.id as site_id
-                    ORDER BY s.id
-                    LIMIT 1000
-                `);
-
-                const sitesList = document.getElementById('sites-list');
-                sitesList.innerHTML = '';
-
-                result.records.forEach(record => {
-                    const option = document.createElement('option');
-                    option.value = record.get('site_id');
-                    sitesList.appendChild(option);
-                });
-
+                await session.run('RETURN 1');
                 await session.close();
-                resultsDiv.innerHTML = `<div class="path" style="border-left-color: #00cc66;">
-                    ✅ Loaded ${result.records.length} sites. Start typing in the fields to see suggestions.
-                </div>`;
 
+                updateStatus(true, 'Connected to Neo4j');
+                resultsDiv.innerHTML = '<div class="path" style="border-left-color: #00cc66;">✅ Connection successful! Click "Load Sites" to continue.</div>';
             } catch (error) {
+                updateStatus(false, 'Connection Failed');
                 resultsDiv.innerHTML = `<div class="error">
-                    <strong>Error loading sites:</strong><br>
+                    <strong>Connection Failed:</strong><br>
                     ${error.message}<br><br>
                     <strong>Troubleshooting:</strong><br>
                     1. Make sure Neo4j database is running (green dot in Neo4j Desktop)<br>
@@ -211,27 +308,86 @@
             }
         }
 
-        async function findPaths() {
-            const startSite = document.getElementById('startSite').value.trim();
-            const endSite = document.getElementById('endSite').value.trim();
+        async function loadSiteList() {
             const resultsDiv = document.getElementById('results');
-
-            if (!startSite || !endSite) {
-                resultsDiv.innerHTML = '<div class="error">⚠️ Please enter both From Site and To Site</div>';
-                return;
-            }
-
-            resultsDiv.innerHTML = '<div class="loading">🔍 Searching for paths...</div>';
+            resultsDiv.innerHTML = '<div class="loading">Loading sites from database...</div>';
 
             try {
                 const driver = getDriver();
                 const session = driver.session();
 
-                const query = `
-                    WITH $startSite as START_SITE,
-                         $endSite as END_SITE
+                const result = await session.run(`
+                    MATCH (s:Site)
+                    RETURN s.id as site_id
+                    ORDER BY s.id
+                `);
 
-                    MATCH path = (start:Site {id: START_SITE})-[:CONNECTED_BY*1..15]-(end:Site {id: END_SITE})
+                const startSelect = document.getElementById('startSite');
+                const endSelect = document.getElementById('endSite');
+
+                // Clear existing options except first
+                startSelect.innerHTML = '<option value="">-- Select From Site --</option>';
+                endSelect.innerHTML = '<option value="">-- Select To Site --</option>';
+
+                result.records.forEach(record => {
+                    const siteId = record.get('site_id');
+
+                    const option1 = document.createElement('option');
+                    option1.value = siteId;
+                    option1.textContent = siteId;
+                    startSelect.appendChild(option1);
+
+                    const option2 = document.createElement('option');
+                    option2.value = siteId;
+                    option2.textContent = siteId;
+                    endSelect.appendChild(option2);
+                });
+
+                await session.close();
+
+                updateStatus(true, 'Connected & Ready', result.records.length);
+                resultsDiv.innerHTML = `<div class="path" style="border-left-color: #00cc66;">
+                    ✅ Successfully loaded ${result.records.length} sites.<br>
+                    Select From and To sites, then click "Find Paths".
+                </div>`;
+
+            } catch (error) {
+                updateStatus(false, 'Connection Failed');
+                resultsDiv.innerHTML = `<div class="error">
+                    <strong>Error loading sites:</strong><br>
+                    ${error.message}<br><br>
+                    <strong>Troubleshooting:</strong><br>
+                    1. Make sure Neo4j database is running (green dot in Neo4j Desktop)<br>
+                    2. Check username/password in settings above<br>
+                    3. Click "Test Connection" first
+                </div>`;
+            }
+        }
+
+        async function findPaths() {
+            const startSite = document.getElementById('startSite').value;
+            const endSite = document.getElementById('endSite').value;
+            const resultsDiv = document.getElementById('results');
+
+            if (!startSite || !endSite) {
+                resultsDiv.innerHTML = '<div class="error">⚠️ Please select both From Site and To Site</div>';
+                return;
+            }
+
+            if (startSite === endSite) {
+                resultsDiv.innerHTML = '<div class="error">⚠️ Please select different sites for From and To</div>';
+                return;
+            }
+
+            resultsDiv.innerHTML = '<div class="loading">🔍 Searching for paths between ' + startSite + ' and ' + endSite + '...</div>';
+
+            try {
+                const driver = getDriver();
+                const session = driver.session();
+
+                // Fixed query for older Neo4j versions (no window functions)
+                const query = `
+                    MATCH path = (start:Site {id: $startSite})-[:CONNECTED_BY*1..15]-(end:Site {id: $endSite})
 
                     WITH path,
                          [node IN nodes(path) | node.id] as route,
@@ -247,20 +403,17 @@
                            )
                          ) / 1000 as distance_km
 
-                    WITH path, route, hops, bottleneck, distance_km,
-                         round(distance_km * 0.005 * 100) / 100 as latency_ms,
-                         row_number() OVER (ORDER BY hops ASC, bottleneck DESC) as rank
+                    WITH route, hops, bottleneck, distance_km,
+                         round(distance_km * 0.005 * 100) / 100 as latency_ms
 
-                    WHERE rank <= 2
+                    ORDER BY hops ASC, bottleneck DESC
+                    LIMIT 2
 
-                    RETURN
-                      rank,
-                      hops,
-                      round(bottleneck) as bottleneck_mbps,
-                      round(distance_km * 10) / 10 as distance_km,
-                      latency_ms,
-                      route
-                    ORDER BY rank
+                    RETURN hops,
+                           round(bottleneck) as bottleneck_mbps,
+                           round(distance_km * 10) / 10 as distance_km,
+                           latency_ms,
+                           route
                 `;
 
                 const result = await session.run(query, { startSite, endSite });
@@ -270,14 +423,14 @@
                         ❌ No path found between <strong>${startSite}</strong> and <strong>${endSite}</strong><br><br>
                         Possible reasons:<br>
                         • Sites are not connected in the network<br>
-                        • Site names are misspelled (check exact capitalization)<br>
-                        • Path is longer than 15 hops
+                        • Path is longer than 15 hops<br>
+                        • Check if both sites exist in the database
                     </div>`;
                 } else {
                     let html = `<h2>📊 Results: ${startSite} → ${endSite}</h2>`;
 
-                    result.records.forEach(record => {
-                        const rank = record.get('rank').toNumber();
+                    result.records.forEach((record, index) => {
+                        const rank = index + 1;
                         const hops = record.get('hops').toNumber();
                         const bottleneck = record.get('bottleneck_mbps').toNumber();
                         const distance = record.get('distance_km');
@@ -285,7 +438,7 @@
                         const route = record.get('route');
 
                         const pathType = rank === 1 ? 'main' : 'protection';
-                        const pathLabel = rank === 1 ? '🟢 MAIN PATH' : '🟡 PROTECTION PATH';
+                        const pathLabel = rank === 1 ? '🟢 MAIN PATH (Best Route)' : '🟡 PROTECTION PATH (Backup Route)';
                         const capacityRating = bottleneck >= 10000 ? '⚡ Excellent' :
                                               bottleneck >= 5000 ? '✅ Good' :
                                               bottleneck >= 1000 ? '⚠️ Adequate' : '🔴 Poor';
@@ -297,7 +450,7 @@
                                     <span class="metric"><strong>Hops:</strong> ${hops}</span>
                                     <span class="metric"><strong>Bottleneck:</strong> ${bottleneck} Mbps ${capacityRating}</span>
                                     <span class="metric"><strong>Distance:</strong> ${distance} km</span>
-                                    <span class="metric"><strong>Latency:</strong> ~${latency} ms</span>
+                                    <span class="metric"><strong>Est. Latency:</strong> ~${latency} ms</span>
                                 </div>
                                 <div class="route">
                                     <strong>Route:</strong><br>
@@ -309,8 +462,9 @@
 
                     if (result.records.length === 1) {
                         html += `<div class="error">
-                            ⚠️ <strong>Warning:</strong> Only ONE path found - no redundancy!<br>
-                            Consider adding backup links for this critical connection.
+                            ⚠️ <strong>Warning: No Redundancy!</strong><br>
+                            Only ONE path found between these sites.<br>
+                            Consider adding backup links for redundancy.
                         </div>`;
                     }
 
@@ -324,16 +478,16 @@
                     <strong>Error:</strong><br>
                     ${error.message}<br><br>
                     <strong>Troubleshooting:</strong><br>
-                    1. Make sure Neo4j database is running (green dot in Neo4j Desktop)<br>
-                    2. Verify connection settings above<br>
-                    3. Check that sites exist in database (click "Load Available Sites")
+                    1. Make sure Neo4j database is still running<br>
+                    2. Try clicking "Load Sites" again<br>
+                    3. Check if sites exist in the database
                 </div>`;
             }
         }
 
-        // Load sites on page load
+        // Auto-test connection on page load
         window.addEventListener('load', () => {
-            setTimeout(loadSiteList, 500);
+            setTimeout(testConnection, 500);
         });
     </script>
 </body>
