@@ -174,6 +174,16 @@
         .config.collapsed {
             display: none;
         }
+        code {
+            background: #f4f4f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+        small {
+            display: block;
+            margin-top: 5px;
+        }
     </style>
 </head>
 <body>
@@ -192,11 +202,11 @@
         </div>
 
         <!-- Toggle Config Button -->
-        <button class="toggle-config" onclick="toggleConfig()">⚙️ Toggle Connection Settings</button>
+        <button class="toggle-config" onclick="toggleConfig()">⚙️ Toggle Settings</button>
 
         <!-- Config Section (Collapsible) -->
         <div class="config collapsed" id="configSection">
-            <div class="config-label">⚙️ Neo4j Connection Settings:</div>
+            <div class="config-label">⚙️ Connection Settings:</div>
             <div class="form-group">
                 <label>Neo4j URL:</label>
                 <input type="text" id="neo4jUrl" value="bolt://localhost:7687" />
@@ -209,6 +219,19 @@
                 <label>Password:</label>
                 <input type="password" id="neo4jPassword" value="cellcard123" />
             </div>
+
+            <div class="config-label" style="margin-top: 20px;">🔧 Query Settings:</div>
+            <div class="form-group">
+                <label>Query Timeout (seconds):</label>
+                <input type="number" id="queryTimeout" value="5" min="1" max="60" />
+                <small style="color: #666;">Maximum time to search for paths (1-60 seconds)</small>
+            </div>
+            <div class="form-group">
+                <label>Maximum Path Length (hops):</label>
+                <input type="number" id="maxHops" value="10" min="3" max="20" />
+                <small style="color: #666;">Shorter = faster but may miss long paths (3-20 hops)</small>
+            </div>
+
             <button onclick="testConnection()" class="btn-small">🔌 Test Connection</button>
         </div>
 
@@ -367,6 +390,8 @@
         async function findPaths() {
             const startSite = document.getElementById('startSite').value;
             const endSite = document.getElementById('endSite').value;
+            const maxHops = parseInt(document.getElementById('maxHops').value) || 10;
+            const queryTimeout = parseInt(document.getElementById('queryTimeout').value) || 5;
             const resultsDiv = document.getElementById('results');
 
             if (!startSite || !endSite) {
@@ -379,15 +404,22 @@
                 return;
             }
 
-            resultsDiv.innerHTML = '<div class="loading">🔍 Searching for paths between ' + startSite + ' and ' + endSite + '...</div>';
+            resultsDiv.innerHTML = `<div class="loading">🔍 Searching for paths between ${startSite} and ${endSite}...<br><small>Max ${maxHops} hops, ${queryTimeout}s timeout</small></div>`;
 
             try {
                 const driver = getDriver();
                 const session = driver.session();
 
-                // Fixed query for older Neo4j versions (no window functions)
+                // Set query timeout
+                const startTime = Date.now();
+                const timeoutPromise = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error(`Query timeout after ${queryTimeout} seconds`)), queryTimeout * 1000)
+                );
+
+                // Optimized query: use shortestPath algorithm, more memory efficient
                 const query = `
-                    MATCH path = (start:Site {id: $startSite})-[:CONNECTED_BY*1..15]-(end:Site {id: $endSite})
+                    // Find shortest paths first (most efficient)
+                    MATCH path = allShortestPaths((start:Site {id: $startSite})-[:CONNECTED_BY*1..$maxHops]-(end:Site {id: $endSite}))
 
                     WITH path,
                          [node IN nodes(path) | node.id] as route,
@@ -403,11 +435,12 @@
                            )
                          ) / 1000 as distance_km
 
-                    WITH route, hops, bottleneck, distance_km,
+                    // Remove duplicate paths (same route)
+                    WITH DISTINCT route, hops, bottleneck, distance_km,
                          round(distance_km * 0.005 * 100) / 100 as latency_ms
 
                     ORDER BY hops ASC, bottleneck DESC
-                    LIMIT 2
+                    LIMIT 5
 
                     RETURN hops,
                            round(bottleneck) as bottleneck_mbps,
@@ -416,7 +449,10 @@
                            route
                 `;
 
-                const result = await session.run(query, { startSite, endSite });
+                const queryPromise = session.run(query, { startSite, endSite, maxHops });
+
+                // Race between query and timeout
+                const result = await Promise.race([queryPromise, timeoutPromise]);
 
                 if (result.records.length === 0) {
                     resultsDiv.innerHTML = `<div class="error">
@@ -474,13 +510,53 @@
                 await session.close();
 
             } catch (error) {
+                let errorMsg = error.message;
+                let troubleshooting = '';
+
+                // Specific error handling
+                if (errorMsg.includes('timeout')) {
+                    troubleshooting = `
+                        <strong>⏱️ Query Timeout:</strong><br>
+                        The search took longer than ${queryTimeout} seconds.<br><br>
+                        <strong>Solutions:</strong><br>
+                        1. Click "Toggle Settings" → Increase "Query Timeout" to 10-15 seconds<br>
+                        2. Reduce "Maximum Path Length" to 5-7 hops for faster results<br>
+                        3. Sites may be very far apart - try closer sites first
+                    `;
+                } else if (errorMsg.includes('memory') || errorMsg.includes('allocation') || errorMsg.includes('threshold')) {
+                    troubleshooting = `
+                        <strong>💾 Memory Limit Reached:</strong><br>
+                        Neo4j ran out of memory processing this query.<br><br>
+                        <strong>Solutions:</strong><br>
+                        1. Click "Toggle Settings" → Reduce "Maximum Path Length" to 5-7 hops<br>
+                        2. These sites may have too many possible paths<br>
+                        3. Try sites that are closer together<br>
+                        4. Advanced: Increase Neo4j memory in neo4j.conf:<br>
+                        &nbsp;&nbsp;&nbsp;<code>dbms.memory.transaction.total.max=1G</code>
+                    `;
+                } else if (errorMsg.includes('not connected') || errorMsg.includes('connection')) {
+                    troubleshooting = `
+                        <strong>🔌 Connection Lost:</strong><br>
+                        Lost connection to Neo4j database.<br><br>
+                        <strong>Solutions:</strong><br>
+                        1. Check Neo4j Desktop - database should have green dot<br>
+                        2. Click "Load Sites from Database" to reconnect<br>
+                        3. Restart Neo4j database if needed
+                    `;
+                } else {
+                    troubleshooting = `
+                        <strong>Troubleshooting:</strong><br>
+                        1. Make sure Neo4j database is still running<br>
+                        2. Try clicking "Load Sites" again<br>
+                        3. Try different sites or reduce max hops in settings<br>
+                        4. Check if both sites exist in the database
+                    `;
+                }
+
                 resultsDiv.innerHTML = `<div class="error">
                     <strong>Error:</strong><br>
-                    ${error.message}<br><br>
-                    <strong>Troubleshooting:</strong><br>
-                    1. Make sure Neo4j database is still running<br>
-                    2. Try clicking "Load Sites" again<br>
-                    3. Check if sites exist in the database
+                    ${errorMsg}<br><br>
+                    ${troubleshooting}
                 </div>`;
             }
         }
