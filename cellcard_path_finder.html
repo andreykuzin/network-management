@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cellcard Transport Path Finder</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #0066cc;
+            text-align: center;
+        }
+        .form-group {
+            margin: 20px 0;
+        }
+        label {
+            display: block;
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #333;
+        }
+        input, select {
+            width: 100%;
+            padding: 10px;
+            font-size: 16px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+        button {
+            background: #0066cc;
+            color: white;
+            padding: 15px 30px;
+            font-size: 18px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 10px;
+        }
+        button:hover {
+            background: #0052a3;
+        }
+        #results {
+            margin-top: 30px;
+        }
+        .path {
+            background: #f9f9f9;
+            border-left: 5px solid #0066cc;
+            padding: 20px;
+            margin: 15px 0;
+            border-radius: 5px;
+        }
+        .path.main {
+            border-left-color: #00cc66;
+            background: #f0fff4;
+        }
+        .path.protection {
+            border-left-color: #ffaa00;
+            background: #fffef0;
+        }
+        .path-header {
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .metric {
+            display: inline-block;
+            margin-right: 20px;
+            padding: 5px 10px;
+            background: white;
+            border-radius: 3px;
+            margin-top: 5px;
+        }
+        .route {
+            margin-top: 10px;
+            padding: 10px;
+            background: white;
+            border-radius: 5px;
+            font-family: monospace;
+        }
+        .error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 5px solid #c62828;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+        .config {
+            background: #fff3cd;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            border-left: 5px solid #ffc107;
+        }
+        .config-label {
+            font-weight: bold;
+            color: #856404;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🗺️ Cellcard Transport Path Finder</h1>
+
+        <div class="config">
+            <div class="config-label">⚙️ Neo4j Connection Settings:</div>
+            <div class="form-group">
+                <label>Neo4j URL:</label>
+                <input type="text" id="neo4jUrl" value="bolt://localhost:7687" />
+            </div>
+            <div class="form-group">
+                <label>Username:</label>
+                <input type="text" id="neo4jUser" value="neo4j" />
+            </div>
+            <div class="form-group">
+                <label>Password:</label>
+                <input type="password" id="neo4jPassword" value="cellcard123" />
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label>From Site (Core):</label>
+            <input type="text" id="startSite" placeholder="e.g., MOBITEL" value="MOBITEL" list="sites-list" />
+        </div>
+
+        <div class="form-group">
+            <label>To Site (Edge):</label>
+            <input type="text" id="endSite" placeholder="e.g., SI270" list="sites-list" />
+        </div>
+
+        <datalist id="sites-list"></datalist>
+
+        <button onclick="findPaths()">🔍 Find Main + Protection Paths</button>
+        <button onclick="loadSiteList()" style="background: #666; margin-top: 5px;">📋 Load Available Sites</button>
+
+        <div id="results"></div>
+    </div>
+
+    <script src="https://unpkg.com/neo4j-driver"></script>
+    <script>
+        let driver = null;
+        let session = null;
+
+        function getDriver() {
+            const url = document.getElementById('neo4jUrl').value;
+            const user = document.getElementById('neo4jUser').value;
+            const password = document.getElementById('neo4jPassword').value;
+
+            if (driver) {
+                driver.close();
+            }
+
+            driver = neo4j.driver(url, neo4j.auth.basic(user, password));
+            return driver;
+        }
+
+        async function loadSiteList() {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '<div class="loading">Loading sites...</div>';
+
+            try {
+                const driver = getDriver();
+                const session = driver.session();
+
+                const result = await session.run(`
+                    MATCH (s:Site)
+                    RETURN s.id as site_id
+                    ORDER BY s.id
+                    LIMIT 1000
+                `);
+
+                const sitesList = document.getElementById('sites-list');
+                sitesList.innerHTML = '';
+
+                result.records.forEach(record => {
+                    const option = document.createElement('option');
+                    option.value = record.get('site_id');
+                    sitesList.appendChild(option);
+                });
+
+                await session.close();
+                resultsDiv.innerHTML = `<div class="path" style="border-left-color: #00cc66;">
+                    ✅ Loaded ${result.records.length} sites. Start typing in the fields to see suggestions.
+                </div>`;
+
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="error">
+                    <strong>Error loading sites:</strong><br>
+                    ${error.message}<br><br>
+                    <strong>Troubleshooting:</strong><br>
+                    1. Make sure Neo4j database is running (green dot in Neo4j Desktop)<br>
+                    2. Check username/password (default: neo4j / cellcard123)<br>
+                    3. Check URL is correct (default: bolt://localhost:7687)
+                </div>`;
+            }
+        }
+
+        async function findPaths() {
+            const startSite = document.getElementById('startSite').value.trim();
+            const endSite = document.getElementById('endSite').value.trim();
+            const resultsDiv = document.getElementById('results');
+
+            if (!startSite || !endSite) {
+                resultsDiv.innerHTML = '<div class="error">⚠️ Please enter both From Site and To Site</div>';
+                return;
+            }
+
+            resultsDiv.innerHTML = '<div class="loading">🔍 Searching for paths...</div>';
+
+            try {
+                const driver = getDriver();
+                const session = driver.session();
+
+                const query = `
+                    WITH $startSite as START_SITE,
+                         $endSite as END_SITE
+
+                    MATCH path = (start:Site {id: START_SITE})-[:CONNECTED_BY*1..15]-(end:Site {id: END_SITE})
+
+                    WITH path,
+                         [node IN nodes(path) | node.id] as route,
+                         length(path) as hops,
+                         reduce(minCap = 999999, rel IN relationships(path) |
+                           CASE WHEN rel.capacity < minCap THEN rel.capacity ELSE minCap END
+                         ) as bottleneck,
+                         reduce(totalDist = 0.0, rel IN relationships(path) |
+                           totalDist +
+                           point.distance(
+                             point({latitude: startNode(rel).latitude, longitude: startNode(rel).longitude}),
+                             point({latitude: endNode(rel).latitude, longitude: endNode(rel).longitude})
+                           )
+                         ) / 1000 as distance_km
+
+                    WITH path, route, hops, bottleneck, distance_km,
+                         round(distance_km * 0.005 * 100) / 100 as latency_ms,
+                         row_number() OVER (ORDER BY hops ASC, bottleneck DESC) as rank
+
+                    WHERE rank <= 2
+
+                    RETURN
+                      rank,
+                      hops,
+                      round(bottleneck) as bottleneck_mbps,
+                      round(distance_km * 10) / 10 as distance_km,
+                      latency_ms,
+                      route
+                    ORDER BY rank
+                `;
+
+                const result = await session.run(query, { startSite, endSite });
+
+                if (result.records.length === 0) {
+                    resultsDiv.innerHTML = `<div class="error">
+                        ❌ No path found between <strong>${startSite}</strong> and <strong>${endSite}</strong><br><br>
+                        Possible reasons:<br>
+                        • Sites are not connected in the network<br>
+                        • Site names are misspelled (check exact capitalization)<br>
+                        • Path is longer than 15 hops
+                    </div>`;
+                } else {
+                    let html = `<h2>📊 Results: ${startSite} → ${endSite}</h2>`;
+
+                    result.records.forEach(record => {
+                        const rank = record.get('rank').toNumber();
+                        const hops = record.get('hops').toNumber();
+                        const bottleneck = record.get('bottleneck_mbps').toNumber();
+                        const distance = record.get('distance_km');
+                        const latency = record.get('latency_ms');
+                        const route = record.get('route');
+
+                        const pathType = rank === 1 ? 'main' : 'protection';
+                        const pathLabel = rank === 1 ? '🟢 MAIN PATH' : '🟡 PROTECTION PATH';
+                        const capacityRating = bottleneck >= 10000 ? '⚡ Excellent' :
+                                              bottleneck >= 5000 ? '✅ Good' :
+                                              bottleneck >= 1000 ? '⚠️ Adequate' : '🔴 Poor';
+
+                        html += `
+                            <div class="path ${pathType}">
+                                <div class="path-header">${pathLabel}</div>
+                                <div>
+                                    <span class="metric"><strong>Hops:</strong> ${hops}</span>
+                                    <span class="metric"><strong>Bottleneck:</strong> ${bottleneck} Mbps ${capacityRating}</span>
+                                    <span class="metric"><strong>Distance:</strong> ${distance} km</span>
+                                    <span class="metric"><strong>Latency:</strong> ~${latency} ms</span>
+                                </div>
+                                <div class="route">
+                                    <strong>Route:</strong><br>
+                                    ${route.join(' → ')}
+                                </div>
+                            </div>
+                        `;
+                    });
+
+                    if (result.records.length === 1) {
+                        html += `<div class="error">
+                            ⚠️ <strong>Warning:</strong> Only ONE path found - no redundancy!<br>
+                            Consider adding backup links for this critical connection.
+                        </div>`;
+                    }
+
+                    resultsDiv.innerHTML = html;
+                }
+
+                await session.close();
+
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="error">
+                    <strong>Error:</strong><br>
+                    ${error.message}<br><br>
+                    <strong>Troubleshooting:</strong><br>
+                    1. Make sure Neo4j database is running (green dot in Neo4j Desktop)<br>
+                    2. Verify connection settings above<br>
+                    3. Check that sites exist in database (click "Load Available Sites")
+                </div>`;
+            }
+        }
+
+        // Load sites on page load
+        window.addEventListener('load', () => {
+            setTimeout(loadSiteList, 500);
+        });
+    </script>
+</body>
+</html>
